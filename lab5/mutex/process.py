@@ -1,8 +1,9 @@
 import logging
 import random
+import threading
 import time
 
-from constMutex import ENTER, RELEASE, ALLOW, ACTIVE
+from constMutex import ENTER, RELEASE, ALLOW, ACTIVE, HEARTBEAT
 
 
 class Process:
@@ -43,9 +44,11 @@ class Process:
         self.other_processes: list = []  # Needed to multicast to others
         self.queue = []  # The request queue list
         self.clock = 0  # The current logical clock
-        self.peer_name = 'unassigned'  # The original peer name
-        self.peer_type = 'unassigned'  # A flag indicating behavior pattern
         self.logger = logging.getLogger("vs2lab.lab5.mutex.process.Process")
+        self.heartbeat_freq = 4
+        self.heartbeat_timeout = 10
+        self.last_heard_from = {}
+        self.heartbeat_thread = threading.Thread(target=self.send_heartbeat)
 
     def __mapid(self, id='-1'):
         # format channel member address
@@ -96,11 +99,30 @@ class Process:
             processes_with_later_message)
         return first_in_queue and all_have_answered
 
+    def check_alive(self):
+        timed_out_processes = [key for key, value in self.last_heard_from.items()
+                                if time.time() - value > self.heartbeat_timeout]
+
+        for proc in timed_out_processes:
+             self.logger.warning("Removing {} from {}".format(proc,self.other_processes))
+             self.other_processes.remove(proc)
+             del self.last_heard_from[proc]
+             self.queue = [msg for msg in self.queue if msg[1] != proc]
+
+    def send_heartbeat(self):
+        while True:
+            request_msg = (self.clock, self.process_id, HEARTBEAT)
+            self.channel.send_to(self.other_processes, request_msg)
+            time.sleep(self.heartbeat_freq)
+
     def __receive(self):
         # Pick up any message
         _receive = self.channel.receive_from(self.other_processes, 3)
         if _receive:
             msg = _receive[1]
+            self.last_heard_from[msg[1]] = time.time()
+
+            self.check_alive()
 
             self.clock = max(self.clock, msg[0])  # Adjust clock value...
             self.clock = self.clock + 1  # ...and increment
@@ -123,15 +145,10 @@ class Process:
                 del (self.queue[0])  # Just remove first message
 
             self.__cleanup_queue()  # Finally sort and cleanup the queue
-        else:
-            self.logger.info("{} timed out on RECEIVE. Local queue: {}".
-                             format(self.__mapid(),
-                                    list(map(lambda msg: (
-                                        'Clock '+str(msg[0]),
-                                        self.__mapid(msg[1]),
-                                        msg[2]), self.queue))))
+        else:       
+            self.logger.warning("{} timed out on RECEIVE.".format(self.__mapid()))
 
-    def init(self, peer_name, peer_type):
+    def init(self):
         self.channel.bind(self.process_id)
 
         self.all_processes = list(self.channel.subgroup('proc'))
@@ -141,23 +158,21 @@ class Process:
         self.other_processes = list(self.channel.subgroup('proc'))
         self.other_processes.remove(self.process_id)
 
-        self.peer_name = peer_name  # assign peer name
-        self.peer_type = peer_type  # assign peer behavior
+        for proc in self.other_processes:
+            self.last_heard_from[proc] = time.time()
 
-        self.logger.info("{} joined channel as {}.".format(
-            peer_name, self.__mapid()))
+        self.logger.info("Member {} joined channel as {}."
+                         .format(self.process_id, self.__mapid()))
+        self.heartbeat_thread.start()
 
     def run(self):
         while True:
-            # Enter the critical section if
-            # 1) there are more than one process left and
-            # 2) this peer has active behavior and
-            # 3) random is true
+            # Enter the critical section if there are more than one process left
+            # and random is true
             if len(self.all_processes) > 1 and \
-                    self.peer_type == ACTIVE and \
                     random.choice([True, False]):
                 self.logger.debug("{} wants to ENTER CS at CLOCK {}."
-                                  .format(self.__mapid(), self.clock))
+                    .format(self.__mapid(), self.clock))
 
                 self.__request_to_enter()
                 while not self.__allowed_to_enter():
@@ -166,7 +181,7 @@ class Process:
                 # Stay in CS for some time ...
                 sleep_time = random.randint(0, 2000)
                 self.logger.debug("{} enters CS for {} milliseconds."
-                                  .format(self.__mapid(), sleep_time))
+                    .format(self.__mapid(), sleep_time))
                 print(" CS <- {}".format(self.__mapid()))
                 time.sleep(sleep_time/1000)
 
