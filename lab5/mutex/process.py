@@ -44,6 +44,8 @@ class Process:
         self.other_processes: list = []  # Needed to multicast to others
         self.queue = []  # The request queue list
         self.clock = 0  # The current logical clock
+        self.peer_name = 'unassigned'  # The original peer name
+        self.peer_type = 'unassigned'  # A flag indicating behavior pattern
         self.logger = logging.getLogger("vs2lab.lab5.mutex.process.Process")
         self.heartbeat_freq = 4
         self.heartbeat_timeout = 10
@@ -106,6 +108,7 @@ class Process:
         for proc in timed_out_processes:
              self.logger.warning("Removing {} from {}".format(proc,self.other_processes))
              self.other_processes.remove(proc)
+             self.all_processes.remove(proc)
              del self.last_heard_from[proc]
              self.queue = [msg for msg in self.queue if msg[1] != proc]
 
@@ -148,7 +151,7 @@ class Process:
         else:       
             self.logger.warning("{} timed out on RECEIVE.".format(self.__mapid()))
 
-    def init(self):
+    def init(self, peer_name, peer_type):
         self.channel.bind(self.process_id)
 
         self.all_processes = list(self.channel.subgroup('proc'))
@@ -157,6 +160,9 @@ class Process:
 
         self.other_processes = list(self.channel.subgroup('proc'))
         self.other_processes.remove(self.process_id)
+
+        self.peer_name = peer_name  # assign peer name
+        self.peer_type = peer_type  # assign peer behavior
 
         for proc in self.other_processes:
             self.last_heard_from[proc] = time.time()
